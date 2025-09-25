@@ -6,6 +6,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import re
+
+def clean_text(text: str) -> str:
+    """
+    Limpia cabeceras como 'SYNTHETIC SHARK' al inicio del mensaje.
+    También quita el emoji 🔔 si está delante.
+    Puedes configurar cabeceras extra con CLEAN_PREFIXES (separadas por coma).
+    """
+    prefixes = [s.strip() for s in os.environ.get("CLEAN_PREFIXES", "").split(",") if s.strip()]
+
+    # Si no defines CLEAN_PREFIXES, aplica por defecto a 'SYNTHETIC SHARK'
+    if not prefixes:
+        prefixes = ["SYNTHETIC SHARK"]
+
+    # Construimos patrones: inicio de texto, opcional emoji / símbolo + espacios, cabecera, salto(s) de línea
+    patterns = [rf'^\s*(?:[^\w\s]|\uFE0F)?\s*{re.escape(p)}\s*\n+' for p in prefixes]
+
+    cleaned = text
+    for pat in patterns:
+        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE)
+
+    return cleaned.strip()
+
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 
@@ -56,6 +79,7 @@ def build_private_link(msg_id: int):
 
 async def repost_text_only(msg):
     text = (getattr(msg, "text", None) or getattr(msg, "message", None) or "") or (getattr(msg, "caption", None) or "")
+    text = clean_text(text)
     if not text:
         print("⚠️ Solo multimedia y protegido: no se puede replicar.")
         return
@@ -67,6 +91,7 @@ async def repost_text_only(msg):
 
 async def manual_copy(msg):
     text = (getattr(msg, "text", None) or getattr(msg, "message", None) or "") or (getattr(msg, "caption", None) or "")
+    text = clean_text(text)
     if getattr(msg, "media", None):
         try:
             path = await msg.download_media()
@@ -89,12 +114,7 @@ async def manual_copy(msg):
 async def safe_forward(msg):
     try:
         if FORWARD_MODE == "copy":
-            try:
-                _ = msg.copy_to
-                await msg.copy_to(TARGET)  # type: ignore[attr-defined]
-                print(f"➡️ Copiado (copy_to) id={msg.id}")
-            except AttributeError:
-                await manual_copy(msg)
+            await manual_copy(msg)
         else:
             await client.forward_messages(TARGET, msg)
             print(f"➡️ Reenviado id={msg.id}")
