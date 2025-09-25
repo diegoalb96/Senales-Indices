@@ -53,14 +53,28 @@ if TG_SESSION_BASE64 and not pathlib.Path(SESSION_FILE).exists():
     except Exception as e:
         print("⚠️ No se pudo reconstruir el archivo .session:", repr(e))
 
-def parse_entity(v: str):
-    v = v.strip()
-    if v.startswith("-100"):
-        return int(v)
-    return v
+def parse_entities(raw: str):
+    """
+    Acepta: '@canal1, -100123, @canal2' -> ['@canal1', -100123, '@canal2']
+    """
+    items = []
+    for part in (raw or "").split(","):
+        v = part.strip()
+        if not v:
+            continue
+        if v.startswith("-100"):
+            items.append(int(v))
+        else:
+            items.append(v)  # @username
+    return items
 
-SOURCE = parse_entity(os.environ["SOURCE_CHANNEL"])
-TARGET = parse_entity(os.environ["TARGET_CHANNEL"])
+# Lee primero SOURCE_CHANNELS (lista separada por comas). Si no existe, usa SOURCE_CHANNEL único.
+raw_sources = os.environ.get("SOURCE_CHANNELS") or os.environ.get("SOURCE_CHANNEL")
+SOURCES = parse_entities(raw_sources)
+
+# TARGET como @username o -100...
+TARGET_ENV = os.environ["TARGET_CHANNEL"].strip()
+TARGET = int(TARGET_ENV) if TARGET_ENV.startswith("-100") else TARGET_ENV
 
 FORWARD_MODE = os.environ.get("FORWARD_MODE", "forward").lower()
 BACKFILL_LAST = int(os.environ.get("BACKFILL_LAST", "0"))
@@ -72,9 +86,10 @@ else:
 
 client = TelegramClient(session_arg, API_ID, API_HASH)
 
-def build_private_link(msg_id: int):
-    if isinstance(SOURCE, int) and str(SOURCE).startswith("-100"):
-        return f"https://t.me/c/{str(SOURCE)[4:]}/{msg_id}"
+def build_private_link(chat_id, msg_id: int):
+    # t.me/c/<id_sin_-100>/<msg_id> para privados
+    if isinstance(chat_id, int) and str(chat_id).startswith("-100"):
+        return f"https://t.me/c/{str(chat_id)[4:]}/{msg_id}"
     return None
 
 async def repost_text_only(msg):
@@ -83,7 +98,7 @@ async def repost_text_only(msg):
     if not text:
         print("⚠️ Solo multimedia y protegido: no se puede replicar.")
         return
-    link = build_private_link(msg.id)
+    link = build_private_link(getattr(msg, "chat_id", None), msg.id)
     if link:
         text = f"{text}\n\n[Mensaje original]({link})"
     await client.send_message(TARGET, text, link_preview=False)
@@ -125,7 +140,7 @@ async def safe_forward(msg):
     except Exception as e:
         print("❌ Error reenviando:", repr(e))
 
-@client.on(events.NewMessage(chats=SOURCE))
+@client.on(events.NewMessage(chats=SOURCES))
 async def handler(event):
     if event.message and event.message.action:
         return
@@ -133,11 +148,12 @@ async def handler(event):
 
 async def backfill_if_needed():
     if BACKFILL_LAST > 0:
-        print(f"🔁 Copiando últimos {BACKFILL_LAST} mensajes…")
-        async for m in client.iter_messages(SOURCE, limit=BACKFILL_LAST, reverse=True):
-            if m and not m.action:
-                await safe_forward(m)
-                await asyncio.sleep(0.25)
+        for src in SOURCES:
+            print(f"🔁 Copiando últimos {BACKFILL_LAST} de {src}…")
+            async for m in client.iter_messages(src, limit=BACKFILL_LAST, reverse=True):
+                if m and not m.action:
+                    await safe_forward(m)
+                    await asyncio.sleep(0.25)
         print("✅ Backfill completado.")
 
 async def main():
